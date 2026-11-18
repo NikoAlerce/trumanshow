@@ -1,0 +1,352 @@
+"""
+Build script for the objkt version of the Truman Show EJX cube.
+
+  python tools/build.py          -> rebuilds dist/ from original/ + src/
+  python tools/build.py --zip    -> also writes trumanshow_objkt.zip
+  python tools/build.py --pages  -> also copies the site to docs/ (GitHub Pages)
+
+What it does
+  * copies the EyeJack X player (index.html/js/css, fonts, icons, images)
+  * converts content/app.json (46 MB of JSON floats + base64 PNGs) into
+      - content/app.json   : scene graph + materials (small JSON)
+      - content/scene.bin  : quantized geometry + animation keyframes
+      - content/tex/*      : textures re-encoded as JPEG / WebP
+  * removes the old static water mesh (the new animated ocean is built at runtime)
+  * copies the runtime code from src/content/ (app.js + generated textures)
+"""
+import base64
+import io
+import json
+import shutil
+import sys
+import zipfile
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parent.parent
+ORIG = ROOT / "original"
+SRC = ROOT / "src"
+DIST = ROOT / "dist"
+
+# objects removed from the scene (replaced at runtime)
+# the old static water plane and the old 3D subtitles (replaced by the sky writing)
+REMOVE_OBJECTS = {"Plane", "letrasd.glb"}
+# images that are no longer referenced once the wall gets its new material
+DROP_TEXTURE_NAMES = {"ChatGPT Image Jun 14, 2025, 04_43_55 PM"}
+# max texture size per texture name (others keep their size)
+MAX_SIZE = {"Image_0": 1024, "Image_1": 1024, "Image_2": 1024}
+HEADPHONE_IMAGES_MAX = 512
+
+
+class Bin:
+    """Accumulates typed binary chunks, 4-byte aligned."""
+
+    def __init__(self):
+        self.buf = bytearray()
+
+    def add(self, arr: np.ndarray) -> int:
+        while len(self.buf) % 4:
+            self.buf.append(0)
+        off = len(self.buf)
+        self.buf += arr.tobytes()
+        return off
+
+
+def quantize_attr(name, arr, item, target_type, b: Bin):
+    a = np.asarray(arr, dtype=np.float64)
+    n = len(a)
+    if target_type in ("Uint8Array", "Uint16Array", "Uint32Array", "Int8Array", "Int16Array", "Int32Array"):
+        # integer attribute (skinIndex) -> stored raw in its own type
+        dt = {"Uint8Array": np.uint8, "Uint16Array": np.uint16, "Uint32Array": np.uint32,
+              "Int8Array": np.int8, "Int16Array": np.int16, "Int32Array": np.int32}[target_type]
+        q = a.astype(dt)
+        return {"o": b.add(q), "n": n, "q": np.dtype(dt).name}
+    if name == "normal":
+        q = np.clip(np.round(a * 127.0), -127, 127).astype(np.int8)
+        return {"o": b.add(q), "n": n, "q": "i8n"}
+    if name == "skinWeight":
+        q = np.clip(np.round(a * 255.0), 0, 255).astype(np.uint8)
+        return {"o": b.add(q), "n": n, "q": "u8w", "k": item}
+    # generic float attribute -> uint16 with per-component range
+    a2 = a.reshape(-1, item)
+    mn = a2.min(axis=0)
+    mx = a2.max(axis=0)
+    rng = np.where(mx - mn > 0, mx - mn, 1.0)
+    step = rng / 65535.0
+    q = np.clip(np.round((a2 - mn) / step), 0, 65535).astype(np.uint16).reshape(-1)
+    return {"o": b.add(q), "n": n, "q": "u16r", "k": item,
+            "min": [float(x) for x in mn], "step": [float(x) for x in step]}
+
+
+def reduce_track(times, values, stride, kind):
+    """Greedy removal of keys that linear interpolation reproduces within tolerance."""
+    t = np.asarray(times, dtype=np.float64)
+    v = np.asarray(values, dtype=np.float64).reshape(len(t), stride)
+    if len(t) <= 2:
+        return t, v
+    span = np.ptp(v, axis=0).max()
+    tol = 4e-4 if kind == "quaternion" else max(1e-5, span * 2e-3)
+    keep = [0]
+    i = 0
+    while i < len(t) - 1:
+        j = i + 2
+        # extend the segment while all intermediate keys are within tolerance
+        while j < len(t):
+            seg_t = t[i + 1:j]
+            w = ((seg_t - t[i]) / (t[j] - t[i]))[:, None]
+            interp = v[i] * (1 - w) + v[j] * w
+            if np.abs(interp - v[i + 1:j]).max() > tol:
+                break
+            j += 1
+        nxt = j - 1
+        keep.append(nxt)
+        i = nxt
+    keep = sorted(set(keep))
+    return t[keep], v[keep]
+
+
+def encode_image(img_bytes: bytes, name: str, uuid: str, cap: int | None):
+    im = Image.open(io.BytesIO(img_bytes))
+    im.load()
+    has_alpha = im.mode in ("RGBA", "LA") and np.array(im)[..., -1].min() < 250
+    if cap and max(im.size) > cap:
+        im = im.resize((cap, cap), Image.LANCZOS)
+    out = io.BytesIO()
+    if has_alpha:
+        im.convert("RGBA").save(out, "WEBP", quality=90, method=6)
+        ext = "webp"
+    else:
+        im.convert("RGB").save(out, "JPEG", quality=90, optimize=True, progressive=True, subsampling=0)
+        ext = "jpg"
+    safe = "".join(c if c.isalnum() else "_" for c in name)[:32].strip("_") or "tex"
+    return f"tex/{safe}_{uuid[:6]}.{ext}", out.getvalue(), im.size
+
+
+def build():
+    if DIST.exists():
+        shutil.rmtree(DIST)
+    DIST.mkdir(parents=True)
+    # --- player files
+    shutil.copy2(ORIG / "index.css", DIST / "index.css")
+    # the cube's camera pans with the right button (and two fingers), like a GLB viewer:
+    # the player turns panning off in its cube mode; turn it back on in our copy
+    js = (ORIG / "index.js").read_text(encoding="utf-8")
+    pan_off = "this.orbitControls.enabled=!0,this.orbitControls.enablePan=!1,"
+    assert js.count(pan_off) == 1, "player changed: cube OrbitControls setup not found"
+    js = js.replace(pan_off, "this.orbitControls.enabled=!0,this.orbitControls.enablePan=!0,")
+    (DIST / "index.js").write_text(js, encoding="utf-8")
+    html = (ORIG / "index.html").read_text(encoding="utf-8")
+    # no XR button (nor its popups): the piece is seen on screen only
+    html = html.replace("</head>", "  <style>.ejx-LaunchRoot,.ejx-LaunchButtonWrapper,.ejx-LaunchButton,"
+                        ".ejx-LauncherPopup{display:none!important}</style>\n</head>", 1)
+    assert "ejx-LaunchRoot" in html
+    html = html.replace("<title>EJX :: Player</title>", "<title>Truman Show · EJX Cube</title>")
+    meta = "\n".join([
+        '    <meta name="description" content="Good morning, and in case I don&#39;t see ya: '
+        'good afternoon, good evening and good night. An EyeJack X cube." />',
+        '    <meta property="og:title" content="Truman Show · EJX Cube" />',
+        '    <meta property="og:image" content="cover.jpg" />',
+    ]) + "\n"
+    anchor = '    <meta charset="utf-8" />\n'
+    html = html.replace(anchor, anchor + meta, 1)
+    (DIST / "index.html").write_text(html, encoding="utf-8")
+    cover = ROOT / "captures" / "cover.jpg"
+    if cover.exists():
+        shutil.copy2(cover, DIST / "cover.jpg")
+    else:
+        print("  (no captures/cover.jpg yet: og:image will be missing)")
+    for d in ["fonts", "icons", "images"]:
+        shutil.copytree(ORIG / d, DIST / d)
+    (DIST / "content" / "tex").mkdir(parents=True)
+
+    data = json.loads((ORIG / "content" / "app.json").read_text(encoding="utf-8"))
+    scene = data["scene"]
+    b = Bin()
+
+    # --- remove objects
+    removed_geo = set()
+    removed_mat = set()
+
+    def prune(obj):
+        kids = []
+        for c in obj.get("children", []):
+            if c.get("name") in REMOVE_OBJECTS:
+                if "geometry" in c:
+                    removed_geo.add(c["geometry"])
+                if isinstance(c.get("material"), str):
+                    removed_mat.add(c["material"])
+                print("  removed object", c.get("name"))
+                continue
+            prune(c)
+            kids.append(c)
+        if "children" in obj:
+            obj["children"] = kids
+
+    prune(scene["object"])
+
+    # material ids still referenced
+    used_mats = set()
+
+    def collect(obj):
+        m = obj.get("material")
+        if isinstance(m, str):
+            used_mats.add(m)
+        elif isinstance(m, list):
+            used_mats.update(m)
+        for c in obj.get("children", []):
+            collect(c)
+
+    collect(scene["object"])
+    used_geo, used_anim = set(), set()
+
+    def collect_refs(obj):
+        if "geometry" in obj:
+            used_geo.add(obj["geometry"])
+        used_anim.update(obj.get("animations", []))
+        for c in obj.get("children", []):
+            collect_refs(c)
+
+    collect_refs(scene["object"])
+    scene["geometries"] = [g for g in scene["geometries"] if g["uuid"] in used_geo]
+    scene["materials"] = [m for m in scene["materials"] if m["uuid"] in used_mats]
+    scene["animations"] = [a for a in scene["animations"] if a["uuid"] in used_anim]
+
+    # --- textures / images
+    tex_by_uuid = {t["uuid"]: t for t in scene["textures"]}
+    drop_tex = {t["uuid"] for t in scene["textures"] if t.get("name") in DROP_TEXTURE_NAMES}
+    for m in scene["materials"]:
+        for k, v in list(m.items()):
+            if isinstance(v, str) and v in drop_tex:
+                del m[k]
+    used_tex = set()
+    for m in scene["materials"]:
+        for k, v in m.items():
+            if isinstance(v, str) and v in tex_by_uuid:
+                used_tex.add(v)
+    scene["textures"] = [t for t in scene["textures"] if t["uuid"] in used_tex]
+    used_imgs = {t["image"] for t in scene["textures"]}
+    headphone_imgs = set()
+    for m in scene["materials"]:
+        if m.get("name") == "Scene_-_Root.001":
+            for k, v in m.items():
+                if isinstance(v, str) and v in tex_by_uuid:
+                    headphone_imgs.add(tex_by_uuid[v]["image"])
+    img_name = {t["image"]: t.get("name", "tex") for t in scene["textures"]}
+    new_images = []
+    tex_bytes = 0
+    for im in scene["images"]:
+        if im["uuid"] not in used_imgs:
+            continue
+        raw = base64.b64decode(im["url"].split(",", 1)[1])
+        cap = HEADPHONE_IMAGES_MAX if im["uuid"] in headphone_imgs else MAX_SIZE.get(img_name.get(im["uuid"]), None)
+        rel, enc, size = encode_image(raw, img_name.get(im["uuid"], "tex"), im["uuid"], cap)
+        (DIST / "content" / rel).write_bytes(enc)
+        tex_bytes += len(enc)
+        print(f"  image {rel:48s} {size[0]}x{size[1]}  {len(raw)//1024:5d} KB -> {len(enc)//1024:4d} KB")
+        new_images.append({"uuid": im["uuid"], "url": rel})
+    scene["images"] = new_images
+
+    # --- geometries -> bin
+    for g in scene["geometries"]:
+        gd = g.get("data")
+        if not gd:
+            continue
+        attrs = gd["attributes"]
+        for drop in ("uv2", "texcoord_2"):
+            attrs.pop(drop, None)
+        for name, a in attrs.items():
+            desc = quantize_attr(name, a["array"], a["itemSize"], a["type"], b)
+            del a["array"]
+            a["bin"] = desc
+        idx = gd.get("index")
+        if idx:
+            arr = np.asarray(idx["array"])
+            dt = np.uint32 if arr.max() > 65535 else np.uint16
+            idx["type"] = "Uint32Array" if dt == np.uint32 else "Uint16Array"
+            idx["bin"] = {"o": b.add(arr.astype(dt)), "n": len(arr), "q": np.dtype(dt).name}
+            del idx["array"]
+
+    # --- animations -> bin
+    for an in scene["animations"]:
+        before = after = 0
+        for t in an["tracks"]:
+            n = len(t["times"])
+            stride = len(t["values"]) // max(n, 1)
+            before += n
+            v = np.asarray(t["values"], dtype=np.float64).reshape(n, stride)
+            if n > 1 and np.allclose(v, v[0], atol=1e-5):
+                t["times"] = [0]
+                t["values"] = [float(x) for x in v[0]]
+                after += 1
+                continue
+            tt, vv = reduce_track(t["times"], t["values"], stride, t["type"])
+            after += len(tt)
+            t["times_bin"] = {"o": b.add(tt.astype(np.float32)), "n": len(tt), "q": "float32"}
+            if t["type"] == "quaternion":
+                q = np.clip(np.round(vv.reshape(-1) * 32767), -32767, 32767).astype(np.int16)
+                t["values_bin"] = {"o": b.add(q), "n": q.size, "q": "i16n"}
+            else:
+                t["values_bin"] = {"o": b.add(vv.reshape(-1).astype(np.float32)), "n": vv.size, "q": "float32"}
+            del t["times"]
+            del t["values"]
+        print(f"  animation {an.get('name') or an['uuid'][:8]}: {before} keys -> {after} keys")
+
+    scripts = data.get("scripts", {})
+    # the per-object EJX mixer scripts are replaced by the runtime timeline
+    data["scripts"] = {}
+    data["legacyScripts"] = list(scripts.keys())
+
+    app_json = json.dumps(data, separators=(",", ":"))
+    (DIST / "content" / "app.json").write_text(app_json, encoding="utf-8")
+    (DIST / "content" / "scene.bin").write_bytes(bytes(b.buf))
+
+    # --- runtime sources
+    src_content = SRC / "content"
+    for p in src_content.rglob("*"):
+        if p.is_file():
+            dst = DIST / "content" / p.relative_to(src_content)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, dst)
+    for p in SRC.glob("*"):
+        if p.is_file():
+            shutil.copy2(p, DIST / p.name)
+
+    ejx = json.loads((ORIG / "content" / "ejx.json").read_text(encoding="utf-8"))
+    ejx["app-json-length"] = len(app_json.encode("utf-8"))
+    ejx["scene-bin-length"] = len(b.buf)
+    (DIST / "content" / "ejx.json").write_text(json.dumps(ejx, indent="\t"), encoding="utf-8")
+
+    total = sum(p.stat().st_size for p in DIST.rglob("*") if p.is_file())
+    print(f"app.json {len(app_json)//1024} KB | scene.bin {len(b.buf)//1024} KB | textures {tex_bytes//1024} KB")
+    print(f"dist total {total/1024/1024:.2f} MB")
+
+
+def make_zip():
+    out = ROOT / "trumanshow_objkt.zip"
+    if out.exists():
+        out.unlink()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for p in sorted(DIST.rglob("*")):
+            if p.is_file():
+                z.write(p, p.relative_to(DIST).as_posix())
+    print(f"zip -> {out.name} {out.stat().st_size/1024/1024:.2f} MB")
+
+
+def make_pages():
+    """mirror dist/ into docs/, the folder GitHub Pages serves"""
+    docs = ROOT / "docs"
+    if docs.exists():
+        shutil.rmtree(docs)
+    shutil.copytree(DIST, docs)
+    (docs / ".nojekyll").write_text("", encoding="utf-8")      # serve every file as it is
+    print(f"pages -> {docs.relative_to(ROOT)}/")
+
+
+if __name__ == "__main__":
+    build()
+    if "--zip" in sys.argv:
+        make_zip()
+    if "--pages" in sys.argv:
+        make_pages()

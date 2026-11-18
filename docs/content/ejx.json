@@ -1,0 +1,23 @@
+{
+	"type": "EJXCube",
+	"title": "",
+	"version": {
+		"editor": 1,
+		"three": 151
+	},
+	"content": "content/app.js",
+	"app-json-length": 231093,
+	"box": {
+		"min": {
+			"x": -1,
+			"y": -1,
+			"z": -1
+		},
+		"max": {
+			"x": 1,
+			"y": 1,
+			"z": 1
+		}
+	},
+	"scene-bin-length": 2560524
+}

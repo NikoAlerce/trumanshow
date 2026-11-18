@@ -1,0 +1,14 @@
+# build output (the site that GitHub Pages serves is docs/)
+dist/
+*.zip
+
+# working captures; only the cover is used by the build
+captures/*
+!captures/cover.jpg
+
+# local tooling
+.claude/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

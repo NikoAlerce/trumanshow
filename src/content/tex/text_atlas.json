@@ -1,0 +1,47 @@
+{
+ "rows": 8,
+ "rowHeight": 256,
+ "width": 2048,
+ "lines": [
+  {
+   "text": "good morning,",
+   "x0": 0.2041,
+   "x1": 0.7905
+  },
+  {
+   "text": "and in case I don't see ya,",
+   "x0": 0.0547,
+   "x1": 0.9443
+  },
+  {
+   "text": "good afternoon, good evening,",
+   "x0": 0.0068,
+   "x1": 0.9888
+  },
+  {
+   "text": "and good night!",
+   "x0": 0.1797,
+   "x1": 0.8184
+  },
+  {
+   "text": "TRUMAN.",
+   "x0": 0.3027,
+   "x1": 0.6924
+  },
+  {
+   "text": "I PAINTED THIS SKY FOR YOU.",
+   "x0": 0.0815,
+   "x1": 0.917
+  },
+  {
+   "text": "OUT THERE, NOTHING IS TRUE.",
+   "x0": 0.062,
+   "x1": 0.9365
+  },
+  {
+   "text": "STAY.",
+   "x0": 0.3799,
+   "x1": 0.6182
+  }
+ ]
+}

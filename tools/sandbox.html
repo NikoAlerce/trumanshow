@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>objkt sandbox test</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; }
+    iframe { width: 100vw; height: 100vh; border: 0; display: block; }
+  </style>
+</head>
+<body>
+  <!-- opaque-origin sandbox like a marketplace embed: every request is cross-origin -->
+  <iframe id="f" sandbox="allow-scripts allow-pointer-lock"
+          src="../dist/index.html?creator=tz1CreatorTestAddress&viewer=tz1ViewerTestAddress"></iframe>
+  <script>
+    // ?same=1 adds allow-same-origin (the other common marketplace configuration)
+    if (new URLSearchParams(location.search).has('same')) {
+      const f = document.getElementById('f');
+      f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-pointer-lock');
+      f.src = f.src;
+    }
+  </script>
+</body>
+</html>
