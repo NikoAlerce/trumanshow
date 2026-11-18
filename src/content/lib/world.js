@@ -37,6 +37,7 @@ function dimWithStudioLight(material, uniforms) {
 }
 
 export async function buildWorld({ THREE, renderer, camera, root, json, base, onProgress, faces, mark = () => {} }) {
+  const breathe = () => new Promise((r) => setTimeout(r, 0));     // lets the loading bar repaint
   const progress = (p) => onProgress && onProgress(p);
   const oceanId = faces.front;
   const roomId = faces.back;
@@ -47,9 +48,9 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
 
   // ------------------------------------------------------------------ textures
   const [skyTex, exitTex, textTex, textInfo] = await Promise.all([
-    loadTexture(THREE, new URL('tex/sky_wall.jpg', base).href),
+    loadTexture(THREE, new URL('tex/sky_wall.webp', base).href),
     makeExitTexture(THREE, new URL('../fonts/URWDIN-Demi.ttf', base).href),
-    loadTexture(THREE, new URL('tex/text_atlas.png', base).href),
+    loadTexture(THREE, new URL('tex/text_atlas.webp', base).href),
     fetch(new URL('tex/text_atlas.json', base)).then((r) => r.json()),
   ]);
   progress(0.5);
@@ -116,7 +117,7 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
 
   // the sea
   const sea = createOcean(THREE, { skyTex, rippleTex, noiseTex, uniforms });
-  mark('ocean');
+  mark('ocean'); await breathe();
   ocean.add(sea.group);
 
   // the boat: re-parent every part under a pivot at the bow puncture
@@ -146,25 +147,25 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
     root, finaleBoat: boatPivot, finaleBowPoint: bowPoint, trumanArmature: truman.armature, trumanClip: truman.clip,
     rippleTex, noiseTex, uniforms, makeRig,
   });
-  mark('storm');
+  mark('storm'); await breathe();
   const morning = createMorning(THREE, {
     root, skyTex, noiseTex, uniforms, trumanArmature: truman.armature, trumanClip: truman.clip, makeRig, family: 'trumanExitDin',
     treeAtlas: loadTreeAtlas(THREE, base),
   });
-  mark('morning');
+  mark('morning'); await breathe();
   const mirror = createMirror(THREE, {
     root, noiseTex, uniforms, trumanArmature: truman.armature, trumanClip: truman.clip, makeRig,
   });
-  mark('mirror');
+  mark('mirror'); await breathe();
   const rainy = createRainOnTruman(THREE, {
     root, skyTex, noiseTex, uniforms, trumanArmature: truman.armature, trumanClip: truman.clip, makeRig,
   });
-  mark('rain');
+  mark('rain'); await breathe();
   [storm, morning, mirror, rainy].forEach((w) => w.world.updateMatrixWorld(true));
 
   // ------------------------------------------------------------------ Christof's control room
   const roomCtl = createRoom(THREE, { renderer, root, room, uniforms, labelFamily: 'trumanExitDin' });
-  mark('room');
+  mark('room'); await breathe();
 
   // ------------------------------------------------------------------ environment maps
   const pmrem = new THREE.PMREMGenerator(renderer);
@@ -206,7 +207,9 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
 
   // live broadcast for the monitors in the room (rendered outside of the EJX passes)
   const envOf = (worldGroup) => (worldGroup === storm.world ? roomEnv : oceanEnv);
+  let ready = false;              // no monitor feeds until the warm-up is over (they would compile shaders one by one)
   roomCtl.setRenderHelper && roomCtl.setRenderHelper((cam, identQuat, worldGroup) => {
+    if (!ready) return;
     const st = {
       tm: renderer.toneMapping, tme: renderer.toneMappingExposure,
       sm: renderer.shadowMap.enabled, smAuto: renderer.shadowMap.autoUpdate, smNeeds: renderer.shadowMap.needsUpdate,
@@ -300,6 +303,55 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
   const beachFog = new THREE.Fog(new THREE.Color(0.62, 0.7, 0.76), 1, 10);
   const camWorld = new THREE.Vector3(), rootWorld = new THREE.Vector3();
   const warmTarget = new THREE.WebGLRenderTarget(8, 8);
+
+  // ------------------------------------------------------------------ shader warm-up helpers
+  // the driver compiles in the background once this extension is on; COMPLETION_STATUS_KHR says when
+  const glc = renderer.getContext();
+  const parallel = glc.getExtension('KHR_parallel_shader_compile');
+  let pending = [], pendingTotal = 0;
+  // compile() never sets the clipping state it reads (the last drawn material's): one tiny draw
+  // with n clipping planes leaves it at n
+  const clipProbe = new THREE.Mesh(new THREE.BufferGeometry().setAttribute('position',
+    new THREE.Float32BufferAttribute([0, 0, 0, 1e-4, 0, 0, 0, 1e-4, 0], 3)));
+  clipProbe.frustumCulled = false;
+  const clipScene = new THREE.Scene().add(clipProbe);
+  const clipMats = new Map();
+  const setClipState = (n) => {
+    if (!clipMats.has(n)) {
+      clipMats.set(n, new THREE.MeshBasicMaterial({
+        clippingPlanes: Array.from({ length: n }, () => new THREE.Plane(new THREE.Vector3(0, 0, 1), 1e3)) }));
+    }
+    clipProbe.material = clipMats.get(n);
+    renderer.render(clipScene, camera);
+  };
+  const clipCount = (m) => (m.clippingPlanes ? m.clippingPlanes.length : 0);
+  const matsOf = (o) => (Array.isArray(o.material) ? o.material : [o.material]);
+  // three's compile() wants a Scene (anything else gets an empty one: no fog, no environment) and
+  // compiles every material it reaches: show it the root with just this world in it, once per
+  // clipping state, with only the materials that are drawn in that state
+  const compileWorld = (w) => {
+    const counts = new Set();
+    w.traverse((o) => { if (o.material) matsOf(o).forEach((m) => counts.add(clipCount(m))); });
+    const kids = root.children;
+    root.children = [w];
+    try {
+      for (const n of counts) {
+        setClipState(n);
+        const saved = [];
+        w.traverse((o) => {
+          if (!o.material) return;
+          const all = matsOf(o), keep = all.filter((m) => clipCount(m) === n);
+          if (keep.length === all.length) return;
+          saved.push([o, o.material]);
+          o.material = Array.isArray(o.material) ? keep : keep[0] || null;
+        });
+        try { renderer.compile(root, camera); } finally { saved.forEach(([o, m]) => { o.material = m; }); }
+      }
+    } finally {
+      root.children = kids;
+    }
+  };
+
   return {
     faces: facesOut,
     debug: { truman, timeline, uniforms, ocean, room, sun, boatPivot, roomCtl, skyVoice, storm, morning, mirror, rainy, sides: dbg },
@@ -334,10 +386,11 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
       if (seen(rainy.world)) rainy.update(st, sinceLast(rainy.world, dt), camera, root.quaternion);
       roomCtl.update(time, dt, frame);
     },
-    // compile every face's shaders as they will really be drawn (tone mapping, shadows,
-    // environment, fog, into a render target like the player's), hidden things included.
-    // step 0 compiles; steps 1-3 draw two faces each into a tiny target, which also
-    // builds their shadow passes and uploads their textures
+    // compile every face's shaders as they will really be drawn (tone mapping, shadows, environment,
+    // fog, clipping, into a render target like the player's), hidden things included.
+    // step 0 only queues them (see compileProgress); steps 1-3 draw two faces each into a tiny
+    // target, which also builds their shadow passes and uploads their textures.
+    // Returns how many shaders step 0 queued.
     warmup(step = 0) {
       const ids = Object.values(facesOut);
       const todo = step === 0 ? ids : ids.slice((step - 1) * 2, step * 2);
@@ -353,28 +406,40 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
       const vis = root.children.map((c) => c.visible);
       const prevTarget = renderer.getRenderTarget();
       const prevScissor = renderer.getScissorTest();
+      const before = renderer.info.programs.length;
       try {
+        renderer.setScissorTest(false);
+        renderer.setRenderTarget(warmTarget);       // shaders are keyed on the target's colour space
         for (const id of todo) {
           root.children.forEach((c) => { c.visible = c.uuid === id; });
           const st = this.beforeRender(id);
-          if (step === 0) {
-            // compile() takes the lights from what is visible but compiles every material it
-            // reaches: hand it this face's world alone, with the scene's environment and fog
-            const w = root.children.find((c) => c.uuid === id);
-            w.environment = root.environment; w.fog = root.fog;
-            renderer.compile(w, camera);
-            delete w.environment; delete w.fog;
-          }
-          else { renderer.setScissorTest(false); renderer.setRenderTarget(warmTarget); renderer.render(root, camera); }
+          if (step === 0) compileWorld(root.children.find((c) => c.uuid === id));
+          else renderer.render(root, camera);
           this.afterRender(st);
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) { console.warn('[truman] warm-up', e); }
       renderer.setRenderTarget(prevTarget);
       renderer.setScissorTest(prevScissor);
       root.children.forEach((c, i) => { c.visible = vis[i]; });
       hidden.forEach((o) => { o.visible = false; });
       dark.forEach((l, i) => { l.visible = darkVis[i]; });
+      if (step === 0) {
+        pending = renderer.info.programs.slice(before);
+        pendingTotal = pending.length;
+        return pendingTotal;
+      }
+      return 0;
     },
+    // share of the queued shaders the driver has finished (1 without the parallel-compile extension:
+    // then the first draw simply waits for them)
+    compileProgress() {
+      if (!parallel) pending = [];
+      while (pending.length && (pending[0].usedTimes === 0 ||                  // released meanwhile
+        glc.getProgramParameter(pending[0].program, parallel.COMPLETION_STATUS_KHR))) pending.shift();
+      return pendingTotal ? 1 - pending.length / pendingTotal : 1;
+    },
+    // the warm-up is over: the monitors may start drawing their feeds
+    start() { ready = true; },
     beforeRender(contentID) {
       const st = {
         tm: renderer.toneMapping, tme: renderer.toneMappingExposure,

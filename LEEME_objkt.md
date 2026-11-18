@@ -4,7 +4,7 @@
 
 | Archivo | Para qué |
 |---|---|
-| `trumanshow_objkt.zip` | El NFT interactivo (HTML), listo para subir a objkt. Pesa 4,5 MB; el original pesaba 21 MB. |
+| `trumanshow_objkt.zip` | El NFT interactivo (HTML), listo para subir a objkt. Pesa 4,3 MB; el original pesaba 21 MB. |
 | `captures/cover.jpg` | Portada / miniatura en 1000×1000: «TRUMAN.» en la luz del cielo. También va dentro del zip como `og:image`. |
 | `captures/skywriting.jpg` | Imagen para difusión: la despedida escrita con humo. |
 | `captures/exit_closeup.jpg` | Imagen para difusión: Truman entrando por la puerta EXIT. |
@@ -27,6 +27,8 @@ El zip original (`trumanshow (1).zip`) no se modificó.
 Cada cara es una ventana a una escena distinta, fija a su cara como un cuadro en su marco: si girás el cubo, la escena gira con él. Arriba y abajo se leen derechas cuando inclinás la vista sobre el cubo desde el frente.
 
 **Cómo se mira** (como un visor común de GLB): arrastrar con el botón izquierdo gira la cámara alrededor del cubo; con el botón derecho la desplaza; la rueda acerca y aleja. En pantallas táctiles: un dedo gira, dos dedos acercan y desplazan. No hay botón XR: la pieza se ve en pantalla.
+
+**La carga**: desde el primer instante, una barra abajo dice cuánto falta: *Loading Seahaven* (descarga), *Building the set* (arma las escenas), *Lighting the stage* (prepara los sombreadores) y *Good morning!* al terminar. La carga empieza sola, sin esperar el toque de «Tap to start». La primera visita tarda unos segundos más, porque la placa de video compila los sombreadores (en paralelo, sin trabar la página). Después quedan guardados en el navegador.
 
 | Cara | Escena |
 |---|---|
@@ -76,7 +78,7 @@ Cada cara es una ventana a una escena distinta, fija a su cara como un cuadro en
 ## Cómo mintear en objkt
 1. Crear token → subir `trumanshow_objkt.zip` (HTML / interactivo).
 2. Portada / miniatura: `captures/cover.jpg`.
-3. **Probar la vista previa de objkt antes de confirmar**: tocar «Tap to start», esperar la carga y girar el cubo para ver las seis caras. La prueba dentro de su iframe con sandbox no se pudo hacer acá.
+3. **Probar la vista previa de objkt antes de confirmar**: esperar a que la barra diga «Good morning!», tocar «Tap to start» y girar el cubo para ver las seis caras. La prueba dentro de su iframe con sandbox no se pudo hacer acá.
 
 ## Para volver a generar
 ```bash

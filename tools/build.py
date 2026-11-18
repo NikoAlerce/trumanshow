@@ -30,6 +30,24 @@ ORIG = ROOT / "original"
 SRC = ROOT / "src"
 DIST = ROOT / "dist"
 
+# the loading bar of index.html (content/app.js fills it in; .wait = before it knows how far along)
+LOADING_CSS = (
+    # its own name for the player's DIN (the player declares "urwdin" only once its script runs);
+    # the file is preloaded at once
+    "@font-face{font-family:tl-din;src:url(./fonts/URWDIN-Demi.ttf) format('truetype');font-display:swap}"
+    "#truman-loading{position:fixed;left:50%;bottom:max(16px,4vh);transform:translateX(-50%);width:min(300px,72vw);"
+    "box-sizing:border-box;padding:10px 16px 12px;border-radius:12px;background:rgba(8,10,14,.66);"
+    "-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);box-shadow:0 2px 18px rgba(0,0,0,.35);"
+    "font:12px/1.25 tl-din,urwdin,system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;letter-spacing:.14em;"
+    "text-transform:uppercase;color:#fff;"
+    "text-align:center;pointer-events:none;z-index:300;transition:opacity .5s ease}"
+    "#truman-loading .tl-label{opacity:.92;white-space:nowrap}"
+    "#truman-loading .tl-track{height:2px;margin-top:9px;background:rgba(255,255,255,.2);border-radius:2px;overflow:hidden}"
+    "#truman-loading .tl-fill{height:100%;width:0;background:#fff;transition:width .35s ease}"
+    "#truman-loading.wait .tl-fill{width:30%;animation:tl-wait 1.4s ease-in-out infinite}"
+    "@keyframes tl-wait{from{transform:translateX(-110%)}to{transform:translateX(340%)}}"
+)
+
 # objects removed from the scene (replaced at runtime)
 # the old static water plane and the old 3D subtitles (replaced by the sky writing)
 REMOVE_OBJECTS = {"Plane", "letrasd.glb"}
@@ -136,6 +154,20 @@ def build():
     pan_off = "this.orbitControls.enabled=!0,this.orbitControls.enablePan=!1,"
     assert js.count(pan_off) == 1, "player changed: cube OrbitControls setup not found"
     js = js.replace(pan_off, "this.orbitControls.enabled=!0,this.orbitControls.enablePan=!0,")
+    # load the content while "Tap to start" waits, not after the tap
+    load_on_tap = "update(e,t){if(this.state===fc){"
+    assert js.count(load_on_tap) == 1, "player changed: content loader state not found"
+    js = js.replace(load_on_tap, "update(e,t){this.contentLoadFunc&&(this.contentLoadFunc(),"
+                    "this.contentLoadFunc=null,this.state=fc);if(this.state===fc){")
+    # three r151 asks every new shader program for its uniforms the moment it is created, which waits
+    # for the driver to finish compiling it: one shader after another, the page frozen meanwhile.
+    # Ask on first use instead, so renderer.compile() only queues the shaders; the driver compiles
+    # them in parallel (KHR_parallel_shader_compile) while the content waits for them.
+    eager = "const it=je.getUniforms(),Vt=qo.seqWithValue(it.seq,Ye);return F.currentProgram=je,F.uniformsList=Vt,je}"
+    assert js.count(eager) == 1, "player changed: three's getProgram not found"
+    js = js.replace(eager, "let Vt=null;Object.defineProperty(F,\"uniformsList\",{configurable:!0,enumerable:!0,"
+                    "get(){return Vt||(Vt=qo.seqWithValue(je.getUniforms().seq,Ye))},set(it){Vt=it}});"
+                    "return F.currentProgram=je,je}")
     (DIST / "index.js").write_text(js, encoding="utf-8")
     html = (ORIG / "index.html").read_text(encoding="utf-8")
     # no XR button (nor its popups): the piece is seen on screen only
@@ -308,7 +340,12 @@ def build():
         if p.is_file():
             dst = DIST / "content" / p.relative_to(src_content)
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, dst)
+            if p.name == "sky_wall.jpg":        # the painted sky: WebP, a third of the size
+                Image.open(p).save(dst.with_suffix(".webp"), "WEBP", quality=86, method=6)
+            elif p.name == "text_atlas.png":    # the text masks (R crisp, G soft): lossless WebP
+                Image.open(p).save(dst.with_suffix(".webp"), "WEBP", lossless=True, quality=100, method=6)
+            else:
+                shutil.copy2(p, dst)
     for p in SRC.glob("*"):
         if p.is_file():
             shutil.copy2(p, DIST / p.name)
@@ -317,6 +354,31 @@ def build():
     ejx["app-json-length"] = len(app_json.encode("utf-8"))
     ejx["scene-bin-length"] = len(b.buf)
     (DIST / "content" / "ejx.json").write_text(json.dumps(ejx, indent="\t"), encoding="utf-8")
+
+    # the player first: it puts the cube and "Tap to start" on screen. Its font is preloaded at once,
+    # the content's files as soon as the player script has run (preloaded along with it, they took
+    # its bandwidth and the page stayed black for seconds on a slow line)
+    font = '<link rel="preload" href="./fonts/URWDIN-Demi.ttf" as="font" type="font/ttf" crossorigin>'
+    later = [["preload", "./content/scene.bin", "fetch"], ["preload", "./content/app.json", "fetch"],
+             ["modulepreload", "./content/app.js", ""]]
+    later += [["modulepreload", f"./content/lib/{p.name}", ""] for p in sorted((DIST / "content" / "lib").glob("*.js"))]
+    big = sorted((DIST / "content" / "tex").glob("*"), key=lambda p: -p.stat().st_size)
+    later += [["preload", f"./content/tex/{p.name}", "image"] for p in big
+              if p.suffix in (".jpg", ".webp", ".png") and p.stat().st_size > 60000]
+    script = ("<script>addEventListener('DOMContentLoaded',function(){" + json.dumps(later, separators=(",", ":")) +
+              ".forEach(function(l){var e=document.createElement('link');e.rel=l[0];e.href=l[1];"
+              "if(l[2]){e.as=l[2];e.crossOrigin='anonymous'}document.head.appendChild(e)})})</script>")
+    page = (DIST / "index.html").read_text(encoding="utf-8")
+    tag = '  <script type="module" crossorigin src="./index.js"></script>'
+    assert page.count(tag) == 1
+    page = page.replace(tag, "  " + font + "\n" + tag + "\n  " + script, 1)
+    # the loading bar is on screen from the first instant (content/app.js takes it over): white on a
+    # dark glass, readable over the black page and over the player's white loading cube alike
+    page = page.replace("</head>", "  <style>" + LOADING_CSS + "</style>\n</head>", 1)
+    page = page.replace("</body>", '    <div id="truman-loading" class="wait"><div class="tl-label">Loading Seahaven</div>'
+                        '<div class="tl-track"><div class="tl-fill"></div></div></div>\n</body>', 1)
+    assert page.count('id="truman-loading"') == 1 and LOADING_CSS in page
+    (DIST / "index.html").write_text(page, encoding="utf-8")
 
     total = sum(p.stat().st_size for p in DIST.rglob("*") if p.is_file())
     print(f"app.json {len(app_json)//1024} KB | scene.bin {len(b.buf)//1024} KB | textures {tex_bytes//1024} KB")

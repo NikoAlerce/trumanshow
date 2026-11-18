@@ -34,22 +34,63 @@ export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gu
   let sceneLoaded = null;
   let sceneLoadedMatrix = null;
   let world = null;
-  let frameCounter = 0;
   let loaded = false;
   let failed = false;
 
   // ------------------------------------------------------------ loading
   const loadT0 = performance.now(), loadMarks = [];        // ms since main(), per phase (shown in ?debug)
-  const mark = (name) => loadMarks.push([name, Math.round(performance.now() - loadT0)]);
+  // how far along each phase leaves the load (downloads fill the first 45%)
+  // (the shaders fill 0.76-0.96 as the driver reports them ready)
+  const STAGES = { fetched: 0.45, decoded: 0.48, parsed: 0.5, textures: 0.53, ocean: 0.58, truman: 0.59, storm: 0.61, morning: 0.63,
+    mirror: 0.65, rain: 0.68, room: 0.69, env: 0.72, built: 0.74, warm0: 0.76, compiled: 0.96, warm1: 0.97, warm2: 0.98, warm3: 0.99 };
+  let stageP = 0;
+  const mark = (name) => {
+    loadMarks.push([name, Math.round(performance.now() - loadT0)]);
+    const k = name.split(':')[0];
+    if (STAGES[k] !== undefined) stageP = Math.max(stageP, STAGES[k]);
+    showProgress();
+  };
   window.__trumanLoad = loadMarks;                            // how long each phase took (for checking load times)
   const progress = { json: 0, bin: 0, extra: 0 };
   let expected = { json: 300000, bin: 3000000 };
   const loadProgress = () => {
-    const p = 0.08 * Math.min(1, progress.json / expected.json) +
-              0.62 * Math.min(1, progress.bin / expected.bin) +
-              0.30 * progress.extra;
-    return Math.min(0.999, p);
+    const dl = 0.06 * Math.min(1, progress.json / expected.json) + 0.39 * Math.min(1, progress.bin / expected.bin);
+    return Math.min(0.999, Math.max(stageP, dl));
   };
+
+  // ------------------------------------------------------------ the loading bar (so nobody thinks it is stuck)
+  // index.html shows it from the first instant (#truman-loading, styled there); built here if missing
+  const bar = (() => {
+    let el = document.getElementById('truman-loading');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'truman-loading';
+      el.style.cssText = 'position:fixed;left:50%;bottom:max(16px,4vh);transform:translateX(-50%);width:min(300px,72vw);'
+        + 'box-sizing:border-box;padding:10px 16px 12px;border-radius:12px;background:rgba(8,10,14,.66);color:#fff;'
+        + 'font:12px/1.25 urwdin,"Helvetica Neue",Arial,sans-serif;letter-spacing:.14em;text-transform:uppercase;'
+        + 'text-align:center;pointer-events:none;z-index:300;transition:opacity .5s ease';
+      el.innerHTML = '<div class="tl-label"></div>'
+        + '<div class="tl-track" style="height:2px;margin-top:9px;background:rgba(255,255,255,.2);border-radius:2px;overflow:hidden">'
+        + '<div class="tl-fill" style="height:100%;width:0;background:#fff;transition:width .35s ease"></div></div>';
+      (document.body || document.documentElement).appendChild(el);
+    }
+    el.classList.remove('wait');                      // from here on the bar shows how far along it is
+    const label = el.querySelector('.tl-label'), fill = el.querySelector('.tl-fill');
+    return {
+      set(p, text) { fill.style.width = (100 * p).toFixed(1) + '%'; label.textContent = text + ' · ' + Math.floor(100 * p) + '%'; },
+      done() {
+        fill.style.width = '100%'; label.textContent = 'Good morning!';
+        setTimeout(() => { el.style.opacity = '0'; }, 900);
+        setTimeout(() => el.remove(), 1600);
+      },
+      fail() { label.textContent = 'Could not load — please reload'; },
+    };
+  })();
+  const showProgress = () => {
+    const p = loadProgress();
+    bar.set(p, p < 0.45 ? 'Loading Seahaven' : p < 0.74 ? 'Building the set' : 'Lighting the stage');
+  };
+  showProgress();
 
   const start = async () => {
     try {
@@ -59,8 +100,8 @@ export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gu
       if (ejx.box) box.set(new THREE.Vector3().copy(ejx.box.min), new THREE.Vector3().copy(ejx.box.max));
 
       const [appText, bin] = await Promise.all([
-        fetchWithProgress(new URL('app.json', BASE).href, 'text', (l) => { progress.json = l; }),
-        fetchWithProgress(new URL('scene.bin', BASE).href, 'arraybuffer', (l) => { progress.bin = l; }),
+        fetchWithProgress(new URL('app.json', BASE).href, 'text', (l) => { progress.json = l; showProgress(); }),
+        fetchWithProgress(new URL('scene.bin', BASE).href, 'arraybuffer', (l) => { progress.bin = l; showProgress(); }),
       ]);
       mark('fetched');
       const json = JSON.parse(appText);
@@ -96,6 +137,7 @@ export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gu
       progress.extra = 1;
     } catch (err) {
       failed = true;
+      bar.fail();
       console.error('[truman] load failed', err);
     }
   };
@@ -110,14 +152,43 @@ export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gu
     if (world) world.update(dt, camera);
   };
 
+  // ------------------------------------------------------------ warm-up: every shader before the cube is shown
+  // one step per frame: 0 queues every face's shaders (the driver compiles them in parallel and the
+  // page stays responsive), 1 waits until the driver has them all, 2-4 draw two faces each into a
+  // tiny target (shadow passes, texture uploads, the last few shaders), then the cube is shown.
+  // Nothing is drawn before that: a draw would wait for its shaders one by one.
+  let warmStep = 0, warmAt = 0, warmFrame = -1, rafFrame = 0;
+  const tick = () => { rafFrame += 1; if (!loaded) requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+  const warm = () => {
+    if (warmFrame === rafFrame) return;               // render() runs once per face
+    warmFrame = rafFrame;
+    const t0 = performance.now();
+    if (warmStep === 0) {
+      const n = world.warmup(0);
+      mark(`warm0:${Math.round(performance.now() - t0)}ms:${n}`);
+      warmAt = performance.now();
+      warmStep = 1;
+    } else if (warmStep === 1) {
+      const p = world.compileProgress();
+      stageP = Math.max(stageP, STAGES.warm0 + (STAGES.compiled - STAGES.warm0) * p);
+      showProgress();
+      if (p >= 1 || t0 - warmAt > 30000) { mark(`compiled:${Math.round(t0 - warmAt)}ms`); warmStep = 2; }
+    } else if (warmStep <= 4) {
+      world.warmup(warmStep - 1);
+      mark(`warm${warmStep - 1}:${Math.round(performance.now() - t0)}ms`);
+      warmStep += 1;
+    } else {
+      loaded = true;
+      world.start();
+      bar.done();
+    }
+  };
+
   const sceneMatrix = new THREE.Matrix4();
   const render = (contentID) => {
     if (sceneLoaded === null) return;
-    frameCounter += 1;
-    // shaders for every face, as they will be drawn, before the cube is shown:
-    // step 0 compiles them all, steps 1-3 draw two faces each into a tiny target
-    if (frameCounter <= 4) { const w0 = performance.now(); world.warmup(frameCounter - 1); mark(`warm${frameCounter - 1}:${Math.round(performance.now() - w0)}ms`); }
-    if (frameCounter === 6) loaded = true;
+    if (!loaded) { warm(); return; }
 
     const visibleSave = [];
     sceneLoaded.children.forEach((child, i) => {
