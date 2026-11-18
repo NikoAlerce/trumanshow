@@ -169,6 +169,18 @@ function normalsFrom(src, N) {
   return c;
 }
 
+// the atlas painted once by paintTreeAtlas and saved as tex/trees.webp + tex/trees_n.webp
+// (painting it takes about a second at load; the two images are ~330 KB)
+export function loadTreeAtlas(THREE, base) {
+  const loader = new THREE.TextureLoader();
+  const map = loader.load(new URL('tex/trees.webp', base).href);
+  map.encoding = THREE.sRGBEncoding;
+  map.anisotropy = 8;
+  const normalMap = loader.load(new URL('tex/trees_n.webp', base).href);
+  normalMap.anisotropy = 8;
+  return { map, normalMap };
+}
+
 export function paintTreeAtlas(THREE, { size = 1024, seed = 11 } = {}) {
   const c = document.createElement('canvas');
   c.width = c.height = size;

@@ -8,6 +8,7 @@
 // sprinkler, swaying trees, chimney smoke, drifting clouds.
 // Seen from -z looking +z (screen right = -x).
 import { PORTAL_GLSL } from './waves.js';
+import { mergeStatic } from './batch.js';
 import { paintTreeAtlas, makeTreeCards, paintCarFlat, CAR, paintBirdStrip, makeBird, setBirdFrame, makeVignette } from './cards.js';
 
 const GROUND_Y = -0.42;
@@ -27,7 +28,7 @@ const smooth = (t) => t * t * (3 - 2 * t);
 const clamp01 = (t) => Math.min(1, Math.max(0, t));
 const ramp = (t, a, b) => smooth(clamp01((t - a) / (b - a)));
 
-export function createMorning(THREE, { root, skyTex, noiseTex, uniforms, trumanArmature, trumanClip, makeRig, family }) {
+export function createMorning(THREE, { root, skyTex, noiseTex, uniforms, trumanArmature, trumanClip, makeRig, family, treeAtlas }) {
   const world = new THREE.Group();
   world.name = 'GoodMorning';
   root.add(world);
@@ -206,7 +207,7 @@ export function createMorning(THREE, { root, skyTex, noiseTex, uniforms, trumanA
   world.add(plate);
 
   // trees and bushes: painted cards that turn to the camera (and to the sun for their shadows)
-  const cards = makeTreeCards(THREE, { atlas: paintTreeAtlas(THREE), uniforms, count: 110 });
+  const cards = makeTreeCards(THREE, { atlas: treeAtlas || paintTreeAtlas(THREE), uniforms, count: 110 });
   world.add(cards.mesh);
   cards.add(-0.33, GROUND_Y + 0.004, 0.02, 0.31, 0.34, 'oak', 0.022);           // the big tree by the house
   cards.add(0.52, GROUND_Y + 0.004, 0.08, 0.27, 0.31, 'maple', 0.025);
@@ -483,11 +484,11 @@ export function createMorning(THREE, { root, skyTex, noiseTex, uniforms, trumanA
   const star = sprite(starTex);
   world.add(star);
   const lampLight = new THREE.PointLight(0xffe8c0, 0, 0, 2);
-  lampGroup.add(lampLight);
+  world.add(lampLight);                    // never inside a hidden group: the light count must not change
   const beam = new THREE.SpotLight(0xfff0d0, 0, 0, 0.34, 0.6, 2);
   beam.position.set(0, 0, 0.036);
   beam.target.position.set(0, 0, 1);
-  lamp.add(beam, beam.target);
+  world.add(beam, beam.target);
 
   // ------------------------------------------------ the torn power cable at the lamp's back
   const CN = 28, CR = 6, CABLE_RAD = 0.0016, TAIL = 0.11;
@@ -858,6 +859,9 @@ export function createMorning(THREE, { root, skyTex, noiseTex, uniforms, trumanA
     });
   }
 
+  // one draw call per kind of static piece (house trim, windows, shutters, roofs...)
+  world.userData.batch = mergeStatic(THREE, world, { skip: new Set([rig.pivot, lampGroup, hook, hookLine, cable, car, sprArm]) });
+
   return {
     world,
     rig,
@@ -877,6 +881,9 @@ export function createMorning(THREE, { root, skyTex, noiseTex, uniforms, trumanA
       lampGlow.visible = falling || sputter > 0.02 || flash > 0;
       lampGlow.material.opacity = falling ? 0.95 : Math.max(sputter, flash);
       lampGlow.scale.setScalar(0.12 + 0.3 * flash + 0.06 * (falling ? 1 : 0));
+      lampLight.position.copy(lampPos);
+      beam.position.copy(lampPos).add(_v.set(0, 0, 0.036 * LS).applyQuaternion(lampQ));
+      beam.target.position.copy(lampPos).add(_v.set(0, 0, 1).applyQuaternion(lampQ));
       lampLight.intensity = (falling ? 0.08 : 0) + flash * 0.7 + sputter * 0.05;
       beam.intensity = falling ? 0.8 : flash * 2.0 + sputter * 0.25;
       lensMat.emissiveIntensity = st === 'hang' || falling ? 1.6 : 0.15 + sputter * 2.0;

@@ -7,6 +7,7 @@
 export function install() {
   const T = window.__truman;
   if (!T || !T.world) throw new Error('load the cube with ?debug first');
+  T.world.debug.sides.all = true;          // update every scene, drawn on screen or not
   const THREE = T.THREE, W = T.world, R = T.renderer;
   const toSRGB = new Uint8ClampedArray(256);
   for (let i = 0; i < 256; i++) { const c = i / 255; toSRGB[i] = Math.round(255 * (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055)); }

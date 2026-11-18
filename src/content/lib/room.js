@@ -386,10 +386,11 @@ export function createRoom(THREE, { renderer, root, room, uniforms, labelFamily 
     set.update(time, dt, live, mic);
 
     if (!renderFeedFn || !live || frame - lastSeenFrame > 30) return;
-    // the main feed every other frame, one CCTV tile per frame
+    // the main feed every fourth frame, one CCTV tile every third (a security feed may stutter)
     step++;
-    if (step % 2 === 0) renderInto(mainRT, feeds.main, time, 9, 1);
-    const t = step % feeds.tiles.length;
+    if (step % 4 === 0) renderInto(mainRT, feeds.main, time, 9, 1);
+    if (step % 3 !== 1) return;
+    const t = ((step - 1) / 3) % feeds.tiles.length;
     const feed = feeds.tiles[t];
     const x = (t % ATLAS_COLS) * TILE_W, y = (ATLAS_ROWS - 1 - Math.floor(t / ATLAS_COLS)) * TILE_H;
     atlas.viewport.set(x, y, TILE_W, TILE_H);

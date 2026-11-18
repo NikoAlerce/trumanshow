@@ -9,6 +9,7 @@ import { createTimeline } from './timeline.js';
 import { createSkyVoice, OPEN_POS } from './skywriting.js';
 import { dressBoat } from './boat.js';
 import { makeRig } from './rig.js';
+import { loadTreeAtlas } from './cards.js';
 import { createStorm } from './storm.js';
 import { createMorning } from './morning.js';
 import { createMirror } from './mirror.js';
@@ -35,7 +36,7 @@ function dimWithStudioLight(material, uniforms) {
   material.needsUpdate = true;
 }
 
-export async function buildWorld({ THREE, renderer, camera, root, json, base, onProgress, faces }) {
+export async function buildWorld({ THREE, renderer, camera, root, json, base, onProgress, faces, mark = () => {} }) {
   const progress = (p) => onProgress && onProgress(p);
   const oceanId = faces.front;
   const roomId = faces.back;
@@ -52,6 +53,7 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
     fetch(new URL('tex/text_atlas.json', base)).then((r) => r.json()),
   ]);
   progress(0.5);
+  mark('textures');
   skyTex.encoding = THREE.sRGBEncoding;
   skyTex.wrapS = THREE.RepeatWrapping;
   skyTex.wrapT = THREE.ClampToEdgeWrapping;
@@ -114,6 +116,7 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
 
   // the sea
   const sea = createOcean(THREE, { skyTex, rippleTex, noiseTex, uniforms });
+  mark('ocean');
   ocean.add(sea.group);
 
   // the boat: re-parent every part under a pivot at the bow puncture
@@ -136,25 +139,32 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
   // Truman
   const trumanRoot = findIn(ocean, 'truman.glb');
   const truman = createTruman(THREE, { ocean, trumanRoot });
+  mark('truman');
 
   // ------------------------------------------------------------------ the other famous scenes, one per face
   const storm = createStorm(THREE, {
     root, finaleBoat: boatPivot, finaleBowPoint: bowPoint, trumanArmature: truman.armature, trumanClip: truman.clip,
     rippleTex, noiseTex, uniforms, makeRig,
   });
+  mark('storm');
   const morning = createMorning(THREE, {
     root, skyTex, noiseTex, uniforms, trumanArmature: truman.armature, trumanClip: truman.clip, makeRig, family: 'trumanExitDin',
+    treeAtlas: loadTreeAtlas(THREE, base),
   });
+  mark('morning');
   const mirror = createMirror(THREE, {
     root, noiseTex, uniforms, trumanArmature: truman.armature, trumanClip: truman.clip, makeRig,
   });
+  mark('mirror');
   const rainy = createRainOnTruman(THREE, {
     root, skyTex, noiseTex, uniforms, trumanArmature: truman.armature, trumanClip: truman.clip, makeRig,
   });
+  mark('rain');
   [storm, morning, mirror, rainy].forEach((w) => w.world.updateMatrixWorld(true));
 
   // ------------------------------------------------------------------ Christof's control room
   const roomCtl = createRoom(THREE, { renderer, root, room, uniforms, labelFamily: 'trumanExitDin' });
+  mark('room');
 
   // ------------------------------------------------------------------ environment maps
   const pmrem = new THREE.PMREMGenerator(renderer);
@@ -189,6 +199,7 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
   envSky.geometry.dispose();
   envSky.material.dispose();
   pmrem.dispose();
+  mark('env');
 
   // ------------------------------------------------------------------ timeline (Truman, subtitles, studio light)
   const timeline = createTimeline(THREE, { truman, skyVoice, uniforms, sun, hemi, roomCtl });
@@ -210,7 +221,11 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
     root.environment = envOf(worldGroup);
     uniforms.uRootRot.value.identity();
     truman.beforeRender(identQuat);
+    if (worldGroup) lastDrawn.set(worldGroup.uuid, frame);
+    const fogSave = root.fog;
+    root.fog = worldGroup === morning.world ? morningFog : worldGroup === rainy.world ? beachFog : null;   // the same shaders as on the face
     renderer.render(root, cam);
+    root.fog = fogSave;
     renderer.toneMapping = st.tm;
     renderer.toneMappingExposure = st.tme;
     renderer.shadowMap.enabled = st.sm;
@@ -271,12 +286,20 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
       'BUTTON CAM', 'CAM 09', 'CAM 15', 'CAM 28', 'CAM 36', 'CAM 40', 'CAM 61', 'NO SIGNAL'],
   });
 
-  const dbg = { subTime: null };
+  const dbg = { subTime: null, all: false };
+  const lastDrawn = new Map(), lastUpdated = new Map();
+  const seen = (w) => dbg.all || frame < 4 || frame - (lastDrawn.has(w.uuid) ? lastDrawn.get(w.uuid) : -99) <= 2;
+  const sinceLast = (w, fallback) => {          // the time since this scene was last updated
+    const t0 = lastUpdated.has(w.uuid) ? lastUpdated.get(w.uuid) : time - fallback;
+    lastUpdated.set(w.uuid, time);
+    return Math.min(0.25, Math.max(0, time - t0));
+  };
   // haze in the control room: linear fog that starts at the face of the cube
   const roomFog = new THREE.Fog(new THREE.Color(0.010, 0.013, 0.024), 1, 6);
   const morningFog = new THREE.Fog(new THREE.Color(0.74, 0.73, 0.68), 1, 10);   // the morning haze: far trees go pale and warm
   const beachFog = new THREE.Fog(new THREE.Color(0.62, 0.7, 0.76), 1, 10);
   const camWorld = new THREE.Vector3(), rootWorld = new THREE.Vector3();
+  const warmTarget = new THREE.WebGLRenderTarget(8, 8);
   return {
     faces: facesOut,
     debug: { truman, timeline, uniforms, ocean, room, sun, boatPivot, roomCtl, skyVoice, storm, morning, mirror, rainy, sides: dbg },
@@ -305,14 +328,52 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
 
       truman.update();
       const st = dbg.subTime === null ? time : dbg.subTime;   // debug: freeze the side scenes at a time
-      storm.update(st, dt);
-      morning.update(st, dt);
-      mirror.update(st, dt, camera, root.quaternion);
-      rainy.update(st, dt, camera, root.quaternion);
+      if (seen(storm.world)) storm.update(st, sinceLast(storm.world, dt));
+      if (seen(morning.world)) morning.update(st, sinceLast(morning.world, dt));
+      if (seen(mirror.world)) mirror.update(st, sinceLast(mirror.world, dt), camera, root.quaternion);
+      if (seen(rainy.world)) rainy.update(st, sinceLast(rainy.world, dt), camera, root.quaternion);
       roomCtl.update(time, dt, frame);
     },
-    warmup() {
-      try { renderer.compile(root, camera); } catch (e) { /* ignore */ }
+    // compile every face's shaders as they will really be drawn (tone mapping, shadows,
+    // environment, fog, into a render target like the player's), hidden things included.
+    // step 0 compiles; steps 1-3 draw two faces each into a tiny target, which also
+    // builds their shadow passes and uploads their textures
+    warmup(step = 0) {
+      const ids = Object.values(facesOut);
+      const todo = step === 0 ? ids : ids.slice((step - 1) * 2, step * 2);
+      if (!todo.length) return;
+      // hidden things are compiled too, but a light that is hidden now stays off: lights are part of every shader
+      const lit = (o) => { for (let p = o; p && p.parent && p.parent !== root; p = p.parent) if (!p.visible) return false; return true; };
+      const dark = [];
+      root.traverse((o) => { if (o.isLight && !lit(o)) dark.push(o); });
+      const hidden = [];
+      root.traverse((o) => { if (!o.visible && !o.isLight && o.parent && o.parent !== root) { hidden.push(o); o.visible = true; } });
+      const darkVis = dark.map((l) => l.visible);
+      dark.forEach((l) => { l.visible = false; });
+      const vis = root.children.map((c) => c.visible);
+      const prevTarget = renderer.getRenderTarget();
+      const prevScissor = renderer.getScissorTest();
+      try {
+        for (const id of todo) {
+          root.children.forEach((c) => { c.visible = c.uuid === id; });
+          const st = this.beforeRender(id);
+          if (step === 0) {
+            // compile() takes the lights from what is visible but compiles every material it
+            // reaches: hand it this face's world alone, with the scene's environment and fog
+            const w = root.children.find((c) => c.uuid === id);
+            w.environment = root.environment; w.fog = root.fog;
+            renderer.compile(w, camera);
+            delete w.environment; delete w.fog;
+          }
+          else { renderer.setScissorTest(false); renderer.setRenderTarget(warmTarget); renderer.render(root, camera); }
+          this.afterRender(st);
+        }
+      } catch (e) { /* ignore */ }
+      renderer.setRenderTarget(prevTarget);
+      renderer.setScissorTest(prevScissor);
+      root.children.forEach((c, i) => { c.visible = vis[i]; });
+      hidden.forEach((o) => { o.visible = false; });
+      dark.forEach((l, i) => { l.visible = darkVis[i]; });
     },
     beforeRender(contentID) {
       const st = {
@@ -324,7 +385,8 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
       renderer.toneMappingExposure = 1.0;
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.autoUpdate = false;
-      if (shadowWorlds.has(contentID) && shadowWorlds.get(contentID) !== frame) {
+      lastDrawn.set(contentID, frame);
+      if (shadowWorlds.has(contentID) && frame - shadowWorlds.get(contentID) >= 2) {      // shadows every other frame
         renderer.shadowMap.needsUpdate = true;
         shadowWorlds.set(contentID, frame);
       }

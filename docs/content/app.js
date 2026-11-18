@@ -22,6 +22,9 @@ function fetchWithProgress(url, type, onProgress) {
 
 export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gui }) => {
   const THREE = window.THREE;
+  // without the per-shader error check the driver can compile shaders in parallel
+  const qs = new URLSearchParams(window.location.search);
+  if (!qs.has('debug') || qs.has('fast')) renderer.debug.checkShaderErrors = false;
 
   let contentPerCubeFace = { front: 'all', right: 'all', back: 'all', left: 'all', top: 'all', bottom: 'all' };
   let cubeConfig = { borderOn: true, borderWidth: 0.0025, borderFeather: 0.5, borderColor: '#ffffff', borderAlpha: 0.25 };
@@ -36,6 +39,9 @@ export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gu
   let failed = false;
 
   // ------------------------------------------------------------ loading
+  const loadT0 = performance.now(), loadMarks = [];        // ms since main(), per phase (shown in ?debug)
+  const mark = (name) => loadMarks.push([name, Math.round(performance.now() - loadT0)]);
+  window.__trumanLoad = loadMarks;                            // how long each phase took (for checking load times)
   const progress = { json: 0, bin: 0, extra: 0 };
   let expected = { json: 300000, bin: 3000000 };
   const loadProgress = () => {
@@ -56,8 +62,10 @@ export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gu
         fetchWithProgress(new URL('app.json', BASE).href, 'text', (l) => { progress.json = l; }),
         fetchWithProgress(new URL('scene.bin', BASE).href, 'arraybuffer', (l) => { progress.bin = l; }),
       ]);
+      mark('fetched');
       const json = JSON.parse(appText);
       decodeBinaryRefs(json, bin);
+      mark('decoded');
 
       const project = json.project;
       contentPerCubeFace = {
@@ -74,12 +82,14 @@ export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gu
         parsed = loader.parse(json.scene, (obj) => { done = true; resolve(obj); });
         if (done) resolve(parsed);
       });
+      mark('parsed');
 
       world = await buildWorld({
         THREE, renderer, camera, root, json, base: BASE,
         onProgress: (p) => { progress.extra = p; },
-        faces: contentPerCubeFace,
+        faces: contentPerCubeFace, mark,
       });
+      mark('built');
       if (world.faces) contentPerCubeFace = world.faces;
       sceneLoaded = root;
       sceneLoadedMatrix = new THREE.Matrix4().compose(root.position, root.quaternion, root.scale);
@@ -104,8 +114,10 @@ export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gu
   const render = (contentID) => {
     if (sceneLoaded === null) return;
     frameCounter += 1;
-    if (frameCounter === 1) world.warmup();
-    if (frameCounter === 3) loaded = true;
+    // shaders for every face, as they will be drawn, before the cube is shown:
+    // step 0 compiles them all, steps 1-3 draw two faces each into a tiny target
+    if (frameCounter <= 4) { const w0 = performance.now(); world.warmup(frameCounter - 1); mark(`warm${frameCounter - 1}:${Math.round(performance.now() - w0)}ms`); }
+    if (frameCounter === 6) loaded = true;
 
     const visibleSave = [];
     sceneLoaded.children.forEach((child, i) => {
@@ -134,6 +146,7 @@ export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gu
     window.__truman = {
       get world() { return world; },
       get root() { return sceneLoaded; },
+      get loadMarks() { return loadMarks; },
       renderer, camera, THREE,
       // fixed camera: azimuth (deg, 0 = +x face), elevation (deg), distance
       setView(az, el, dist = 4.5, target = [0, 0, 0]) { dbg.view = { az, el, dist, target }; },
