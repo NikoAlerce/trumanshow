@@ -80,8 +80,9 @@ Cada cara es una ventana a una escena distinta, fija a su cara como un cuadro en
 
 ## Para volver a generar
 ```bash
-python tools/build.py --zip
+python tools/build.py --zip --pages
 ```
+- `--zip`: el archivo para objkt. `--pages`: copia el sitio a `docs/`, que GitHub Pages publica en https://nikoalerce.github.io/trumanshow/ (repo: https://github.com/NikoAlerce/trumanshow). Para actualizar la página: build con `--pages`, commit y push.
 - `tools/gen_sky.py`: cielo pintado.
 - `tools/gen_text.py`: textos del cielo, rasterizados con Segoe Script y Georgia. Solo se incluye la imagen; las fuentes no van en el zip.
 - `tools/serve.py`: servidor local. Después se abre `http://127.0.0.1:8766/dist/index.html`.
