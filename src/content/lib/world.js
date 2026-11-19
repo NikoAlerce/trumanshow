@@ -375,7 +375,7 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
     // camFor(worldGroup): the camera seen from that world's face, if it differs (amAr turns each world upright
     // behind its tilted face); by default the one the world was built with
     update(dt, camFor = null) {
-      const camOf = (w) => (camFor && camFor(w)) || camera;
+      const camOf = (w) => (typeof camFor === 'function' && camFor(w)) || camera;   // (the EJX player's app passes its camera here: ignored, as before)
       time += dt;
       frame++;
       uniforms.uTime.value = time;
