@@ -57,6 +57,8 @@ export function createWallMaterial(THREE, { skyTex, uniforms, doorCut = false, n
         // content space = world space with the cube rotation removed
         vLocalPos = transpose(uRootRot) * (modelMatrix * vec4(transformed, 1.0)).xyz;
         vLocalNrm = normalize(transpose(uRootRot) * (mat3(modelMatrix) * objectNormal));`);
+    // three r154+ calls the last chunk opaque_fragment (r151, the EJX player's: output_fragment)
+    const out = shader.fragmentShader.includes('#include <opaque_fragment>') ? '#include <opaque_fragment>' : '#include <output_fragment>';
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform sampler2D uSky;
@@ -157,11 +159,11 @@ export function createWallMaterial(THREE, { skyTex, uniforms, doorCut = false, n
         roughnessFactor = mix(roughnessFactor, 0.22, wet);`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         totalEmissiveRadiance *= base * mix(0.30, 0.10, proud) * uWallGlow * paintGlow;`)
-      .replace('#include <output_fragment>', `
+      .replace(out, `
         outgoingLight = mix(outgoingLight, uDeep, under * 0.9);
         outgoingLight = mix(outgoingLight, paint * uWallGlow, farK);
         outgoingLight = outgoingLight * uLight + skyGlow;
-        #include <output_fragment>`);
+        ` + out);
   };
   mat.customProgramCacheKey = () => 'skywall' + (doorCut ? '-cut' : '');
   return mat;

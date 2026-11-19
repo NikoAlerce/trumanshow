@@ -182,6 +182,8 @@ export const main = ({ renderer, renderTarget, camera, scene, loadingManager, gu
       loaded = true;
       world.start();
       bar.done();
+      // the AR button: the same cube in your space, through amAr (ar/ next to content/; see lib/arbutton.js)
+      import('./lib/arbutton.js').then((m) => m.showArButton()).catch((e) => console.warn('[truman] AR button', e));
     }
   };
 

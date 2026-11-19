@@ -28,16 +28,22 @@ function dimWithStudioLight(material, uniforms) {
   material.onBeforeCompile = (shader, r) => {
     if (prev) prev(shader, r);
     shader.uniforms.uLight = uniforms.uLight;
+    // three r154+ calls the last chunk opaque_fragment (r151, the EJX player's: output_fragment)
+    const out = shader.fragmentShader.includes('#include <opaque_fragment>') ? '#include <opaque_fragment>' : '#include <output_fragment>';
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nuniform float uLight;')
-      .replace('#include <output_fragment>', 'outgoingLight *= uLight;\n#include <output_fragment>');
+      .replace(out, 'outgoingLight *= uLight;\n' + out);
   };
   material.customProgramCacheKey = () => 'dim-' + material.type;
   material.needsUpdate = true;
 }
 
-export async function buildWorld({ THREE, renderer, camera, root, json, base, onProgress, faces, mark = () => {} }) {
-  const breathe = () => new Promise((r) => setTimeout(r, 0));     // lets the loading bar repaint
+// fonts: where the EXIT sign's DIN is (by default the EJX player's fonts/ folder, next to content/)
+// pause: what to wait for between the scenes (by default a tick, so the loading bar repaints; amAr also
+// resets three's GL state there when it shares the context with the 8th Wall engine)
+// detail: how dense the two seas are (1 = as built; amAr uses 0.5 on phones)
+export async function buildWorld({ THREE, renderer, camera, root, json, base, onProgress, faces, mark = () => {}, pause = null, fonts = null, detail = 1 }) {
+  const breathe = pause || (() => new Promise((r) => setTimeout(r, 0)));
   const progress = (p) => onProgress && onProgress(p);
   const oceanId = faces.front;
   const roomId = faces.back;
@@ -49,7 +55,7 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
   // ------------------------------------------------------------------ textures
   const [skyTex, exitTex, textTex, textInfo] = await Promise.all([
     loadTexture(THREE, new URL('tex/sky_wall.webp', base).href),
-    makeExitTexture(THREE, new URL('../fonts/URWDIN-Demi.ttf', base).href),
+    makeExitTexture(THREE, new URL('URWDIN-Demi.ttf', fonts || new URL('../fonts/', base)).href),   // the player's DIN (amAr: next to the content)
     loadTexture(THREE, new URL('tex/text_atlas.webp', base).href),
     fetch(new URL('tex/text_atlas.json', base)).then((r) => r.json()),
   ]);
@@ -116,7 +122,7 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
   ocean.add(exitSign);
 
   // the sea
-  const sea = createOcean(THREE, { skyTex, rippleTex, noiseTex, uniforms });
+  const sea = createOcean(THREE, { skyTex, rippleTex, noiseTex, uniforms, detail });
   mark('ocean'); await breathe();
   ocean.add(sea.group);
 
@@ -145,7 +151,7 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
   // ------------------------------------------------------------------ the other famous scenes, one per face
   const storm = createStorm(THREE, {
     root, finaleBoat: boatPivot, finaleBowPoint: bowPoint, trumanArmature: truman.armature, trumanClip: truman.clip,
-    rippleTex, noiseTex, uniforms, makeRig,
+    rippleTex, noiseTex, uniforms, makeRig, detail,
   });
   mark('storm'); await breathe();
   const morning = createMorning(THREE, {
@@ -208,6 +214,13 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
   // live broadcast for the monitors in the room (rendered outside of the EJX passes)
   const envOf = (worldGroup) => (worldGroup === storm.world ? roomEnv : oceanEnv);
   let ready = false;              // no monitor feeds until the warm-up is over (they would compile shaders one by one)
+  // how often the costly things are redrawn (amAr lowers them on phones; the EJX player keeps these). feedEvery spaces
+  // out the monitor feeds (the room skips its turns: a feed skipped after the room cleared its screen left it black)
+  const quality = {
+    shadowEvery: 2,
+    get feedEvery() { return roomCtl.feedEvery || 1; }, set feedEvery(v) { roomCtl.feedEvery = v; },
+    get feedsInXR() { return !!roomCtl.feedsInXR; }, set feedsInXR(v) { roomCtl.feedsInXR = v; },   // live monitors in an XR session (amAr)
+  };
   roomCtl.setRenderHelper && roomCtl.setRenderHelper((cam, identQuat, worldGroup) => {
     if (!ready) return;
     const st = {
@@ -267,6 +280,9 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
     bottom: rainy.world.uuid,          // the rain that only falls on him
   };
   const shadowWorlds = new Map([[oceanId, -1], [morning.world.uuid, -1], [mirror.world.uuid, -1], [rainy.world.uuid, -1]]);
+  // one world's shadows per frame: they take turns (several worlds on screen used to redraw them all in the same frame,
+  // a heavy frame every few that read as stutter). The warm-up draws them all.
+  let shadowFrame = -1, warming = false;
   const envFor = new Map([
     [oceanId, () => oceanEnv], [roomId, () => roomEnv], [storm.world.uuid, () => roomEnv],
     [morning.world.uuid, () => oceanEnv], [mirror.world.uuid, () => oceanEnv], [rainy.world.uuid, () => oceanEnv],
@@ -354,8 +370,12 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
 
   return {
     faces: facesOut,
+    quality,
     debug: { truman, timeline, uniforms, ocean, room, sun, boatPivot, roomCtl, skyVoice, storm, morning, mirror, rainy, sides: dbg },
-    update(dt) {
+    // camFor(worldGroup): the camera seen from that world's face, if it differs (amAr turns each world upright
+    // behind its tilted face); by default the one the world was built with
+    update(dt, camFor = null) {
+      const camOf = (w) => (typeof camFor === 'function' && camFor(w)) || camera;   // (the EJX player's app passes its camera here: ignored, as before)
       time += dt;
       frame++;
       uniforms.uTime.value = time;
@@ -382,8 +402,8 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
       const st = dbg.subTime === null ? time : dbg.subTime;   // debug: freeze the side scenes at a time
       if (seen(storm.world)) storm.update(st, sinceLast(storm.world, dt));
       if (seen(morning.world)) morning.update(st, sinceLast(morning.world, dt));
-      if (seen(mirror.world)) mirror.update(st, sinceLast(mirror.world, dt), camera, root.quaternion);
-      if (seen(rainy.world)) rainy.update(st, sinceLast(rainy.world, dt), camera, root.quaternion);
+      if (seen(mirror.world)) mirror.update(st, sinceLast(mirror.world, dt), camOf(mirror.world), root.quaternion);
+      if (seen(rainy.world)) rainy.update(st, sinceLast(rainy.world, dt), camOf(rainy.world), root.quaternion);
       roomCtl.update(time, dt, frame);
     },
     // compile every face's shaders as they will really be drawn (tone mapping, shadows, environment,
@@ -407,6 +427,7 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
       const prevTarget = renderer.getRenderTarget();
       const prevScissor = renderer.getScissorTest();
       const before = renderer.info.programs.length;
+      warming = true;
       try {
         renderer.setScissorTest(false);
         renderer.setRenderTarget(warmTarget);       // shaders are keyed on the target's colour space
@@ -418,6 +439,7 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
           this.afterRender(st);
         }
       } catch (e) { console.warn('[truman] warm-up', e); }
+      warming = false;
       renderer.setRenderTarget(prevTarget);
       renderer.setScissorTest(prevScissor);
       root.children.forEach((c, i) => { c.visible = vis[i]; });
@@ -451,9 +473,10 @@ export async function buildWorld({ THREE, renderer, camera, root, json, base, on
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.autoUpdate = false;
       lastDrawn.set(contentID, frame);
-      if (shadowWorlds.has(contentID) && frame - shadowWorlds.get(contentID) >= 2) {      // shadows every other frame
+      if (shadowWorlds.has(contentID) && frame - shadowWorlds.get(contentID) >= quality.shadowEvery && (warming || shadowFrame !== frame)) {      // shadows every other frame, one world per frame
         renderer.shadowMap.needsUpdate = true;
         shadowWorlds.set(contentID, frame);
+        shadowFrame = frame;
       }
       renderer.localClippingEnabled = true;
       root.environment = envFor.has(contentID) ? envFor.get(contentID)() : oceanEnv;

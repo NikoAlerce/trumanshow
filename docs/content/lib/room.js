@@ -374,7 +374,9 @@ export function createRoom(THREE, { renderer, root, room, uniforms, labelFamily 
   ctl.setMic = (m) => { mic = m; };
   ctl.update = (time, dt, frame) => {
     if (mixer) mixer.update(dt);
-    const live = signal > 0.5 && !renderer.xr.isPresenting;
+    // in an XR session the EJX player could not draw the feeds (its compositing broke): static. amAr can
+    // (ctl.feedsInXR): the feeds stay live in AR
+    const live = signal > 0.5 && (ctl.feedsInXR || !renderer.xr.isPresenting);
     screenUniforms.uSignal.value = live ? 1 : 0;
     onAirMat.color.setScalar(live ? 1.0 : 0.12);
     onAirLight.intensity = live ? 0.02 : 0.0;
@@ -386,11 +388,13 @@ export function createRoom(THREE, { renderer, root, room, uniforms, labelFamily 
     set.update(time, dt, live, mic);
 
     if (!renderFeedFn || !live || frame - lastSeenFrame > 30) return;
-    // the main feed every fourth frame, one CCTV tile every third (a security feed may stutter)
+    // the main feed every fourth frame, one CCTV tile every third (a security feed may stutter); never both in the same
+    // frame (two whole scenes in one frame was a hitch). ctl.feedEvery spaces them out (amAr: 3 on phones)
     step++;
-    if (step % 4 === 0) renderInto(mainRT, feeds.main, time, 9, 1);
-    if (step % 3 !== 1) return;
-    const t = ((step - 1) / 3) % feeds.tiles.length;
+    const every = Math.max(1, ctl.feedEvery || 1);
+    if (step % (4 * every) === 0) { renderInto(mainRT, feeds.main, time, 9, 1); return; }
+    if (step % (3 * every) !== 1) return;
+    const t = Math.floor((step - 1) / (3 * every)) % feeds.tiles.length;
     const feed = feeds.tiles[t];
     const x = (t % ATLAS_COLS) * TILE_W, y = (ATLAS_ROWS - 1 - Math.floor(t / ATLAS_COLS)) * TILE_H;
     atlas.viewport.set(x, y, TILE_W, TILE_H);
