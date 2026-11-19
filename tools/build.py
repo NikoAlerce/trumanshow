@@ -13,6 +13,8 @@ What it does
       - content/tex/*      : textures re-encoded as JPEG / WebP
   * removes the old static water mesh (the new animated ocean is built at runtime)
   * copies the runtime code from src/content/ (app.js + generated textures)
+  * copies the AR view from src/ar/ (amAr's viewer for this cube, brought by tools/import_ar.py) to ar/,
+    with the list of the content files it reads
 """
 import base64
 import io
@@ -380,9 +382,43 @@ def build():
     assert page.count('id="truman-loading"') == 1 and LOADING_CSS in page
     (DIST / "index.html").write_text(page, encoding="utf-8")
 
+    build_ar()
+
     total = sum(p.stat().st_size for p in DIST.rglob("*") if p.is_file())
     print(f"app.json {len(app_json)//1024} KB | scene.bin {len(b.buf)//1024} KB | textures {tex_bytes//1024} KB")
     print(f"dist total {total/1024/1024:.2f} MB")
+
+
+def build_ar():
+    """ar/: amAr's viewer for this cube (tools/import_ar.py brings it into src/ar/). It reads the cube from the same
+    content/ as the EyeJack player; here it gets the list of those files and their sizes (for its loading bar)."""
+    src = SRC / "ar"
+    if not (src / "proyecto.json").exists():
+        print("no src/ar/ (python tools/import_ar.py): this build has no AR view")
+        return
+    dst = DIST / "ar"
+    shutil.copytree(src, dst)
+    content = DIST / "content"
+    # not for the AR view: the EyeJack player's app and the cube page's own AR button
+    skip = {"app.js", "lib/arbutton.js", "lib/qrcode.js"}
+    files = sorted(f for f in (p.relative_to(content).as_posix() for p in content.rglob("*") if p.is_file()) if f not in skip)
+    page = (dst / "index.html").read_text(encoding="utf-8")
+    assert page.count("<title>amAr</title>") == 1
+    page = page.replace("<title>amAr</title>", '<title>amAr</title>' + chr(10) + '<link rel="icon" type="image/svg" href="../icons/favicon.svg">', 1)
+    (dst / "index.html").write_text(page, encoding="utf-8")
+    proj = json.loads((dst / "proyecto.json").read_text(encoding="utf-8"))
+    sizes = {}
+    for scene in proj["escenas"]:
+        for c in scene.get("contenidos", []):
+            if c.get("tipo") == "cubo":
+                c["archivos"] = files
+                for f in files:
+                    n = (content / f).stat().st_size
+                    sizes[c["carpeta"] + f] = {"bytes": n, "aire": n}
+    (dst / "proyecto.json").write_text(json.dumps(proj, ensure_ascii=False, indent=2) + chr(10), encoding="utf-8")
+    (dst / "pesos.json").write_text(json.dumps(sizes, separators=(",", ":")), encoding="utf-8")
+    kb = sum(p.stat().st_size for p in dst.rglob("*") if p.is_file()) / 1024
+    print(f"ar/ {kb:.0f} KB (amAr {proj.get('exportado', {}).get('commit', '?')}), reading {len(files)} files of content/")
 
 
 def make_zip():
@@ -403,6 +439,15 @@ def make_pages():
         shutil.rmtree(docs)
     shutil.copytree(DIST, docs)
     (docs / ".nojekyll").write_text("", encoding="utf-8")      # serve every file as it is
+    # objkt.html: the piece in a frame like objkt's (same sandbox and permissions), to try the AR button on a phone
+    # before minting. Only on the site, not in the zip
+    (docs / "objkt.html").write_text(
+        '<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>Prueba: el cubo como en objkt</title><style>html,body{margin:0;height:100%;background:#0b0c0e}'
+        'iframe{position:fixed;inset:0;width:100%;height:100%;border:0}</style></head><body>'
+        '<iframe src="./index.html?creators=prueba&amp;objkt=0" sandbox="allow-scripts allow-downloads" '
+        'allow="accelerometer; camera; gyroscope; microphone; xr-spatial-tracking; midi;"></iframe></body></html>' + chr(10),
+        encoding="utf-8")
     print(f"pages -> {docs.relative_to(ROOT)}/")
 
 

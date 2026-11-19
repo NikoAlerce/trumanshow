@@ -4,7 +4,7 @@
 
 | Archivo | Para qué |
 |---|---|
-| `trumanshow_objkt.zip` | El NFT interactivo (HTML), listo para subir a objkt. Pesa 4,3 MB; el original pesaba 21 MB. |
+| `trumanshow_objkt.zip` | El NFT interactivo (HTML), listo para subir a objkt. Pesa 4,6 MB con la realidad aumentada (`ar/`, 0,3 MB); el original pesaba 21 MB. |
 | `captures/cover.jpg` | Portada / miniatura en 1000×1000: «TRUMAN.» en la luz del cielo. También va dentro del zip como `og:image`. |
 | `captures/skywriting.jpg` | Imagen para difusión: la despedida escrita con humo. |
 | `captures/exit_closeup.jpg` | Imagen para difusión: Truman entrando por la puerta EXIT. |
@@ -26,7 +26,7 @@ El zip original (`trumanshow (1).zip`) no se modificó.
 
 Cada cara es una ventana a una escena distinta, fija a su cara como un cuadro en su marco: si girás el cubo, la escena gira con él. Arriba y abajo se leen derechas cuando inclinás la vista sobre el cubo desde el frente.
 
-**Cómo se mira** (como un visor común de GLB): arrastrar con el botón izquierdo gira la cámara alrededor del cubo; con el botón derecho la desplaza; la rueda acerca y aleja. En pantallas táctiles: un dedo gira, dos dedos acercan y desplazan. No hay botón XR: la pieza se ve en pantalla.
+**Cómo se mira** (como un visor común de GLB): arrastrar con el botón izquierdo gira la cámara alrededor del cubo; con el botón derecho la desplaza; la rueda acerca y aleja. En pantallas táctiles: un dedo gira, dos dedos acercan y desplazan. El botón XR de EyeJack está oculto; en su lugar, cuando el cubo terminó de cargar, aparece **View in AR** abajo a la derecha (ver *La realidad aumentada en el NFT*).
 
 **La carga**: desde el primer instante, una barra abajo dice cuánto falta: *Loading Seahaven* (descarga), *Building the set* (arma las escenas), *Lighting the stage* (prepara los sombreadores) y *Good morning!* al terminar. La carga empieza sola, sin esperar el toque de «Tap to start». La primera visita tarda unos segundos más, porque la placa de video compila los sombreadores (en paralelo, sin trabar la página). Después quedan guardados en el navegador.
 
@@ -79,11 +79,13 @@ Cada cara es una ventana a una escena distinta, fija a su cara como un cuadro en
 1. Crear token → subir `trumanshow_objkt.zip` (HTML / interactivo).
 2. Portada / miniatura: `captures/cover.jpg`.
 3. **Probar la vista previa de objkt antes de confirmar**: esperar a que la barra diga «Good morning!», tocar «Tap to start» y girar el cubo para ver las seis caras. La prueba dentro de su iframe con sandbox no se pudo hacer acá.
+4. En la misma vista previa, **View in AR**: en la compu muestra un QR; escanearlo con el teléfono (Android con Chrome) y ver el cubo en el lugar.
 
 ## Para volver a generar
 ```bash
 python tools/build.py --zip --pages
 ```
+- `tools/import_ar.py`: trae el visor de AR de amAr a `src/ar/` (ver *La realidad aumentada en el NFT*). Va antes del build cuando cambia algo en amAr.
 - `--zip`: el archivo para objkt. `--pages`: copia el sitio a `docs/`, que GitHub Pages publica en https://nikoalerce.github.io/trumanshow/ (repo: https://github.com/NikoAlerce/trumanshow). Para actualizar la página: build con `--pages`, commit y push.
 - `tools/gen_sky.py`: cielo pintado.
 - `tools/gen_text.py`: textos del cielo, rasterizados con Segoe Script y Georgia. Solo se incluye la imagen; las fuentes no van en el zip.
@@ -98,3 +100,26 @@ El mismo contenido se ve en amAr (`Desktop/amAr`) como un cubo que flota en el l
 ```bash
 node herramientas/traer_cubo.mjs truman ../trumanshow/dist/content
 ```
+
+## La realidad aumentada en el NFT (`ar/`)
+El zip lleva adentro el visor de amAr para este cubo, en la carpeta `ar/`: lee las mismas escenas de `content/`, así que no se duplica nada (suma 0,3 MB). Va en inglés y sin el motor de 8th Wall, cuya licencia es revocable y no deja pasárselo a otros (y esto queda para siempre en IPFS).
+
+**El botón View in AR** aparece cuando el cubo terminó de cargar:
+- **En una compu**: muestra un QR y el link a `ar/` de la misma obra, en el mismo servidor desde donde se está viendo (en objkt, su servidor de archivos). Se escanea con el teléfono.
+- **En un teléfono, adentro de objkt**: objkt muestra la obra en un recuadro aislado (sandbox sin `allow-same-origin`) y ahí el navegador no deja abrir la cámara, aunque objkt le da permiso de cámara y de AR. Se probó: Chrome responde «Invalid security origin». Por eso el panel explica eso y da el link para abrirlo en el navegador, con un botón **Copy**.
+- **En un teléfono, con la obra abierta sola** (por ejemplo, desde ese link o desde GitHub Pages): abre la AR directo, en otra pestaña.
+
+**En la AR**: en Android con Chrome (ARCore) es realidad aumentada de verdad, con WebXR: el cubo queda donde lo ponés, se camina alrededor, una persona delante lo tapa y con el dedo se gira. En el iPhone (Safari no tiene WebXR) el cubo flota sobre la cámara y se mira girando el teléfono, sin caminarlo. En una compu se ve en 3D.
+
+objkt tiene además un «modo avanzado» (el ícono del frasco debajo de la obra) que le da a la obra su propio origen. Con ese modo la AR quizás abra adentro de objkt, pero no se probó en un teléfono.
+
+**Para actualizarlo** (después de cambiar y commitear algo en amAr):
+```bash
+python tools/import_ar.py
+python tools/build.py --zip
+```
+`import_ar.py` corre `herramientas/exportar.mjs` de amAr sobre su **último commit**, no sobre la carpeta de trabajo: en el NFT va solo lo commiteado. Los textos en inglés de la AR están en `import_ar.py`.
+
+**Para probarlo en el teléfono antes de mintear**: `python tools/build.py --pages`, commit y push. Después, en el teléfono:
+- https://nikoalerce.github.io/trumanshow/ es la obra sola: View in AR abre la AR directo.
+- https://nikoalerce.github.io/trumanshow/objkt.html es la obra adentro de un recuadro igual al de objkt: View in AR da el link para abrir afuera.

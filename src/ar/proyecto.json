@@ -1,0 +1,41 @@
+{
+  "nombre": "amAr",
+  "slug": "truman",
+  "marca": "amAr · Niko Alerce",
+  "idioma": "en",
+  "sin8": true,
+  "exportado": {
+    "escena": "truman/cubo",
+    "commit": "8b07ea0",
+    "fecha": "2026-11-19"
+  },
+  "obras": [],
+  "ventanas": [],
+  "colecciones": [],
+  "escenas": [
+    {
+      "id": "cubo",
+      "titulo": "Truman Show · EJX Cube",
+      "leyenda": "Look ahead",
+      "publicada": true,
+      "ayuda": "Six scenes from The Truman Show, one on each face of the cube. Walk around it; look from above, and crouch to see the bottom one.",
+      "distancia_m": 1.6,
+      "rumbo_grados": 0,
+      "miniatura": "../cover.jpg",
+      "contenidos": [
+        {
+          "tipo": "cubo",
+          "carpeta": "../content/",
+          "lado_m": 0.6,
+          "x_m": 0,
+          "y_m": 1.3,
+          "z_m": 0,
+          "giro_grados": -105,
+          "pose": "diamante",
+          "fuentes": "../fonts/"
+        }
+      ]
+    }
+  ],
+  "portales": []
+}
