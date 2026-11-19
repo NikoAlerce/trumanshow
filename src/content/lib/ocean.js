@@ -58,12 +58,13 @@ vec3 envReflect(vec3 P, vec3 R) {
 }
 `;
 
-export function createOcean(THREE, { skyTex, rippleTex, noiseTex, uniforms }) {
+// detail: how dense the sea grid is (1 = as built; amAr uses 0.5 on phones, a quarter of the triangles)
+export function createOcean(THREE, { skyTex, rippleTex, noiseTex, uniforms, detail = 1 }) {
   const group = new THREE.Group();
   group.name = 'StudioSea';
 
   // ---------------------------------------------------------------- surface geometry
-  const inner = 0.6, outer = 1.15, N = 192, Nside = 22, far = 14;
+  const inner = 0.6, outer = 1.15, N = Math.round(192 * detail), Nside = Math.max(8, Math.round(22 * detail)), far = 14;
   const xs = [];
   for (let i = 0; i < Nside; i++) xs.push(-outer + (outer - inner) * (i / Nside));
   for (let i = 0; i <= N; i++) xs.push(-inner + (2 * inner * i) / N);

@@ -92,3 +92,9 @@ python tools/build.py --zip --pages
 - Con `?debug` en la URL se exponen controles de desarrollo en `window.__truman`; sin ese parámetro no hacen nada. Por ejemplo, `__truman.world.debug.sides.subTime = 9` congela las escenas de las otras caras en ese segundo.
 
 El código nuevo está en `src/content/` (`app.js` + `lib/`).
+
+## En realidad aumentada, con amAr
+El mismo contenido se ve en amAr (`Desktop/amAr`) como un cubo que flota en el lugar: proyecto `truman`, escena `cubo`. Por eso `lib/` tiene que andar con el three.js del reproductor de EyeJack (r151) y con el de amAr (r160). Después de cada build, en la carpeta de amAr:
+```bash
+node herramientas/traer_cubo.mjs truman ../trumanshow/dist/content
+```

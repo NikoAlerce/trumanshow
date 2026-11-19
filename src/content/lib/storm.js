@@ -214,7 +214,7 @@ function makeBolt(THREE, rnd, from, to) {
   return g;
 }
 
-export function createStorm(THREE, { root, finaleBoat, finaleBowPoint, trumanArmature, trumanClip, rippleTex, noiseTex, uniforms, makeRig }) {
+export function createStorm(THREE, { root, finaleBoat, finaleBowPoint, trumanArmature, trumanClip, rippleTex, noiseTex, uniforms, makeRig, detail = 1 }) {
   const world = new THREE.Group();
   world.name = 'TheStorm';
   root.add(world);
@@ -225,7 +225,7 @@ export function createStorm(THREE, { root, finaleBoat, finaleBowPoint, trumanArm
   };
 
   // ---------------------------------------------------------------- sea
-  const inner = 0.6, outer = 1.25, N = 160, side = 16, far = 12;
+  const inner = 0.6, outer = 1.25, N = Math.round(160 * detail), side = Math.max(8, Math.round(16 * detail)), far = 12;   // detail: see ocean.js
   const xs = [];
   for (let i = 0; i < side; i++) xs.push(-outer + (outer - inner) * (i / side));
   for (let i = 0; i <= N; i++) xs.push(-inner + (2 * inner * i) / N);

@@ -57,11 +57,13 @@ function patch(THREE, material, uniforms, restMatrix, extra) {
     if (extra.afterMap) fs = fs.replace('#include <map_fragment>', '#include <map_fragment>\n' + extra.afterMap);
     if (extra.emissive) fs = fs.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + extra.emissive);
     if (extra.rough) fs = fs.replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n' + extra.rough);
-    fs = fs.replace('#include <output_fragment>', `
+    // three r154+ calls the last chunk opaque_fragment (r151, the EJX player's: output_fragment)
+    const out = fs.includes('#include <opaque_fragment>') ? '#include <opaque_fragment>' : '#include <output_fragment>';
+    fs = fs.replace(out, `
       float uwDepth = ${WATER_Y.toFixed(5)} - vRest.y;
       outgoingLight = mix(outgoingLight, vec3(0.008, 0.07, 0.09), smoothstep(0.0, 0.035, uwDepth) * 0.85);
       outgoingLight *= uLight;
-      #include <output_fragment>`);
+      ${out}`);
     shader.fragmentShader = fs;
   };
   material.customProgramCacheKey = () => 'boat-' + (extra.key || 'base');
